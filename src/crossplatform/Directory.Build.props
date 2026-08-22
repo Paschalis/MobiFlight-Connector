@@ -1,0 +1,26 @@
+<Project>
+  <!--
+    The repository root Directory.Build.props pins every project to net10.0-windows/win-x86,
+    which is correct for the WinForms Connector but cannot be built or run on macOS and Linux.
+
+    MSBuild only picks up the nearest Directory.Build.props, so this file deliberately does not
+    import the root one. Everything below src/crossplatform is portable by construction: if a
+    project here ever pulls in a Windows only dependency it will fail to build on the CI runners
+    for macOS and Linux.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Platforms>AnyCPU</Platforms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <Company>MobiFlight</Company>
+    <Product>MobiFlight Connector</Product>
+    <Copyright>Copyright Sebastian Moebius 2014 - 2026</Copyright>
+  </PropertyGroup>
+</Project>

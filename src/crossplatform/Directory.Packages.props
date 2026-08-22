@@ -1,0 +1,13 @@
+<Project>
+  <!--
+    Kept separate from the root Directory.Packages.props so the portable projects do not inherit
+    the Windows only package set of the Connector.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="System.IO.Ports" Version="10.0.9" />
+  </ItemGroup>
+</Project>

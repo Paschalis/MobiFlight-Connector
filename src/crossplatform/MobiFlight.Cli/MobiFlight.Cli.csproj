@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyTitle>MobiFlight CLI</AssemblyTitle>
+    <Description>Command line tools for running MobiFlight against X-Plane on macOS and Linux.</Description>
+    <RootNamespace>MobiFlight.Cli</RootNamespace>
+    <AssemblyName>mobiflight</AssemblyName>
+    <RollForward>LatestMinor</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MobiFlight.Core\MobiFlight.Core.csproj" />
+  </ItemGroup>
+
+</Project>

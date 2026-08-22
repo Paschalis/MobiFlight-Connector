@@ -1,0 +1,14 @@
+<Project Sdk="MSTest.Sdk/4.0.2">
+
+  <PropertyGroup>
+    <RootNamespace>MobiFlight.Core.Tests</RootNamespace>
+    <AssemblyName>MobiFlight.Core.Tests</AssemblyName>
+    <UseVSTest>true</UseVSTest>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MobiFlight.Core\MobiFlight.Core.csproj" />
+  </ItemGroup>
+
+</Project>

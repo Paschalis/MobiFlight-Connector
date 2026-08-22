@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="MobiFlight.Cli/MobiFlight.Cli.csproj" />
+  <Project Path="MobiFlight.Core.Tests/MobiFlight.Core.Tests.csproj" />
+  <Project Path="MobiFlight.Core/MobiFlight.Core.csproj" />
+</Solution>

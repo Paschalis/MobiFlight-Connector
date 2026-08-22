@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyTitle>MobiFlight Core</AssemblyTitle>
+    <Description>Portable MobiFlight building blocks: X-Plane UDP connectivity and serial device discovery.</Description>
+    <RootNamespace>MobiFlight.Core</RootNamespace>
+    <AssemblyName>MobiFlight.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Cross platform serial support: /dev/cu.* on macOS, /dev/tty{ACM,USB}* on Linux, COM* on Windows. -->
+    <PackageReference Include="System.IO.Ports" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="MobiFlight.Core.Tests" />
+  </ItemGroup>
+
+</Project>
