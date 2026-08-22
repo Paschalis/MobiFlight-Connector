@@ -91,6 +91,9 @@ namespace MobiFlight.UI.Dialogs
             peripheralsPanel.LoadSettings();
 
             proSimPanel.LoadSettings();
+
+            // TAB X-Plane
+            xplanePanel.LoadSettings();
         }
 
         /// <summary>
@@ -113,7 +116,10 @@ namespace MobiFlight.UI.Dialogs
 
             // ProSim Tab
             proSimPanel.SaveSettings();
-            
+
+            // X-Plane Tab
+            xplanePanel.SaveSettings();
+
             // Reset ProSim connection state when settings change
             if (execManager != null)
             {

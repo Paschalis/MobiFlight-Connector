@@ -57,8 +57,27 @@ namespace MobiFlight
             { FlightSimType.MSFS2020, "MSFS2020" },
         };
 
+        /// <summary>
+        /// Set by the ExecutionManager while a connection to an X-Plane instance on another machine is alive.
+        /// </summary>
+        /// <remarks>
+        /// Sim detection works by looking for a process on the local machine. An X-Plane instance that
+        /// runs on a different computer (which may not even be a Windows machine) has no local process,
+        /// so its availability is reported through this flag instead.
+        /// </remarks>
+        static public bool RemoteXplaneConnected = false;
+
         static public bool IsAvailable()
         {
+            // A remote X-Plane cannot be found in the local process list. Once the UDP connection is
+            // established we know the sim is there and report it as available.
+            if (RemoteXplaneConnected)
+            {
+                FlightSimConnectionMethod = FlightSimConnectionMethod.XPLANE;
+                FlightSimType = FlightSimType.XPLANE;
+                return true;
+            }
+
             string proc = "fs9";
             // check for fs2004 / fs9
             if (Process.GetProcessesByName(proc).Length > 0)

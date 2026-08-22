@@ -67,6 +67,8 @@
             this.peripheralsPanel = new MobiFlight.UI.Panels.Settings.PeripheralsPanel();
             this.ProSimTab = new System.Windows.Forms.TabPage();
             this.proSimPanel = new MobiFlight.UI.Panels.Settings.ProSimPanel();
+            this.XplaneTab = new System.Windows.Forms.TabPage();
+            this.xplanePanel = new MobiFlight.UI.Panels.Settings.XplanePanel();
             this.firmwareSettingsToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             this.toolStripSeparator5 = new System.Windows.Forms.ToolStripSeparator();
             this.firmwareUpdateToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -80,6 +82,7 @@
             this.mobiFlightTabPage.SuspendLayout();
             this.peripheralsTabPage.SuspendLayout();
             this.ProSimTab.SuspendLayout();
+            this.XplaneTab.SuspendLayout();
             this.SuspendLayout();
             // 
             // panel1
@@ -278,6 +281,7 @@
             this.tabControl1.Controls.Add(this.peripheralsTabPage);
             this.tabControl1.Controls.Add(this.ArcazeTabPage);
             this.tabControl1.Controls.Add(this.ProSimTab);
+            this.tabControl1.Controls.Add(this.XplaneTab);
             resources.ApplyResources(this.tabControl1, "tabControl1");
             this.tabControl1.Name = "tabControl1";
             this.tabControl1.SelectedIndex = 0;
@@ -317,7 +321,24 @@
             // 
             resources.ApplyResources(this.proSimPanel, "proSimPanel");
             this.proSimPanel.Name = "proSimPanel";
-            // 
+            //
+            // XplaneTab
+            //
+            this.XplaneTab.Controls.Add(this.xplanePanel);
+            this.XplaneTab.Location = new System.Drawing.Point(4, 22);
+            this.XplaneTab.Name = "XplaneTab";
+            this.XplaneTab.Size = new System.Drawing.Size(563, 585);
+            this.XplaneTab.TabIndex = 6;
+            this.XplaneTab.Text = "X-Plane";
+            this.XplaneTab.UseVisualStyleBackColor = true;
+            //
+            // xplanePanel
+            //
+            this.xplanePanel.Location = new System.Drawing.Point(0, 0);
+            this.xplanePanel.Name = "xplanePanel";
+            this.xplanePanel.Size = new System.Drawing.Size(558, 524);
+            this.xplanePanel.TabIndex = 0;
+            //
             // firmwareSettingsToolStripMenuItem
             // 
             this.firmwareSettingsToolStripMenuItem.Name = "firmwareSettingsToolStripMenuItem";
@@ -358,6 +379,7 @@
             this.peripheralsTabPage.ResumeLayout(false);
             this.ProSimTab.ResumeLayout(false);
             this.ProSimTab.PerformLayout();
+            this.XplaneTab.ResumeLayout(false);
             this.ResumeLayout(false);
 
         }
@@ -407,5 +429,7 @@
         private Panels.Settings.PeripheralsPanel peripheralsPanel;
         private System.Windows.Forms.TabPage ProSimTab;
         private Panels.Settings.ProSimPanel proSimPanel;
+        private System.Windows.Forms.TabPage XplaneTab;
+        private Panels.Settings.XplanePanel xplanePanel;
     }
 }

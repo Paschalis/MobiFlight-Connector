@@ -1212,6 +1212,43 @@ namespace MobiFlight
         }
 
         /// <summary>
+        /// Connects to an X-Plane instance that runs on a different machine.
+        /// </summary>
+        /// <remarks>
+        /// This runs outside of the SimAvailable() check on purpose. SimAvailable() detects a sim by
+        /// looking for its process on the local machine, which by definition can never find an
+        /// X-Plane running on another computer.
+        /// </remarks>
+        private void TryConnectToRemoteXplane()
+        {
+            var settings = xplane.XplaneConnectionSettings.FromApplicationSettings();
+
+            if (!settings.RemoteEnabled)
+            {
+                FlightSim.RemoteXplaneConnected = false;
+
+                // Fall back to the local endpoint so that turning the option off does not leave the
+                // cache pointing at the remote machine.
+                xplaneCache.Settings = new xplane.XplaneConnectionSettings();
+                return;
+            }
+
+            // Applying the settings drops an existing connection when the endpoint changed.
+            xplaneCache.Settings = settings;
+
+            // A remote sim can disappear without any local signal, so check the heartbeat.
+            xplaneCache.CheckConnectionStatus();
+
+            if (!xplaneCache.IsConnected())
+            {
+                Log.Instance.log($"Trying auto connect to remote X-Plane at {settings}", LogSeverity.Debug);
+                xplaneCache.Connect();
+            }
+
+            FlightSim.RemoteXplaneConnected = xplaneCache.IsConnected();
+        }
+
+        /// <summary>
         /// Resets ProSim retry state when connection is successful
         /// </summary>
         private void ResetProSimRetryStateOnSuccess()
@@ -1248,6 +1285,10 @@ namespace MobiFlight
 
             // Reset retry counter if ProSim is connected
             ResetProSimRetryStateOnSuccess();
+
+            // Try to connect to an X-Plane running on another machine. Has to happen before the
+            // SimAvailable() check below because a remote sim has no local process to detect.
+            TryConnectToRemoteXplane();
 
             // Check only for available sims if not in Offline mode.
             if (SimAvailable())

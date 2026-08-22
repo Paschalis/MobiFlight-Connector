@@ -20,6 +20,13 @@ namespace MobiFlightUnitTests.mock.xplane
 
         public int UpdateFrequencyPerSecond { get; set; }
 
+        public XplaneConnectionSettings Settings { get; set; } = new XplaneConnectionSettings();
+
+        /// <summary>
+        /// Number of times the connection watchdog was polled.
+        /// </summary>
+        public int CheckConnectionStatusCallCount { get; private set; }
+
         public event EventHandler Closed { add { } remove { } }
         public event EventHandler ConnectionLost { add { } remove { } }
         public event EventHandler Connected { add { } remove { } }
@@ -58,6 +65,11 @@ namespace MobiFlightUnitTests.mock.xplane
         public void Stop()
         {
             // do nothing
+        }
+
+        public void CheckConnectionStatus()
+        {
+            CheckConnectionStatusCallCount++;
         }
 
         public float readDataRef(string dataRefPath)

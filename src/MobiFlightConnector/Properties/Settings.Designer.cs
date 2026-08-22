@@ -659,5 +659,41 @@ namespace MobiFlight.Properties {
                 this["LegacySettingsMigrated"] = value;
             }
         }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool XplaneRemoteEnabled {
+            get {
+                return ((bool)(this["XplaneRemoteEnabled"]));
+            }
+            set {
+                this["XplaneRemoteEnabled"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("127.0.0.1")]
+        public string XplaneHost {
+            get {
+                return ((string)(this["XplaneHost"]));
+            }
+            set {
+                this["XplaneHost"] = value;
+            }
+        }
+
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("49000")]
+        public int XplanePort {
+            get {
+                return ((int)(this["XplanePort"]));
+            }
+            set {
+                this["XplanePort"] = value;
+            }
+        }
     }
 }
