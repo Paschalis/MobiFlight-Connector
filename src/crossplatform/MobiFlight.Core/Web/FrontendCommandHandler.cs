@@ -338,7 +338,10 @@ public sealed class FrontendCommandHandler
         await _host.BroadcastAsync("ProjectStatus",
             new FrontendMessages.ProjectStatus(false, "success")).ConfigureAwait(false);
 
+        // Both destinations on purpose: the browser's log panel, and the terminal running the
+        // server, which is where someone testing from a shell is actually looking.
         await _state.SendLogAsync($"Saved {Project.FilePath}").ConfigureAwait(false);
+        Log?.Invoke(this, $"Saved {Project.FilePath}");
     }
 
     private async Task ToolbarAsync(JsonObject? payload)

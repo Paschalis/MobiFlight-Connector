@@ -55,6 +55,17 @@ public sealed class FrontendHost : IAsyncDisposable
     private readonly ConcurrentDictionary<Guid, WebSocket> _clients = new();
     private readonly CancellationTokenSource _cancellation = new();
 
+    /// <summary>
+    /// Serializes broadcasts.
+    /// </summary>
+    /// <remarks>
+    /// WebSocket.SendAsync does not allow a second send while one is in flight; it throws and the
+    /// connection aborts. Broadcasts come from several places at once here (initial state on
+    /// connect, project updates after an edit, dataref updates from the sim), so they have to be
+    /// queued rather than left to race.
+    /// </remarks>
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+
     private Task? _acceptLoop;
 
     public FrontendHost(int port = 8080, string? webRoot = null, string host = "localhost")
@@ -108,22 +119,49 @@ public sealed class FrontendHost : IAsyncDisposable
         var json = JsonSerializer.Serialize(new MessageEnvelope(key, payload), JsonOptions);
         var bytes = Encoding.UTF8.GetBytes(json);
 
-        foreach (var (id, socket) in _clients)
+        try
         {
-            if (socket.State != WebSocketState.Open)
-            {
-                _clients.TryRemove(id, out _);
-                continue;
-            }
+            await _sendLock.WaitAsync(_cancellation.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            return;
+        }
 
+        try
+        {
+            foreach (var (id, socket) in _clients)
+            {
+                if (socket.State != WebSocketState.Open)
+                {
+                    _clients.TryRemove(id, out _);
+                    continue;
+                }
+
+                try
+                {
+                    await socket.SendAsync(bytes, WebSocketMessageType.Text, true, _cancellation.Token)
+                                .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is WebSocketException
+                                              or OperationCanceledException
+                                              or ObjectDisposedException
+                                              or InvalidOperationException)
+                {
+                    _clients.TryRemove(id, out _);
+                }
+            }
+        }
+        finally
+        {
+            // Only release when the semaphore is still alive; disposal can race a shutdown.
             try
             {
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, _cancellation.Token)
-                            .ConfigureAwait(false);
+                _sendLock.Release();
             }
-            catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or ObjectDisposedException)
+            catch (ObjectDisposedException)
             {
-                _clients.TryRemove(id, out _);
+                // Shutting down.
             }
         }
     }
@@ -359,6 +397,7 @@ public sealed class FrontendHost : IAsyncDisposable
             }
         }
 
+        _sendLock.Dispose();
         _cancellation.Dispose();
     }
 }

@@ -151,6 +151,106 @@ public sealed class FrontendHostTests
         StringAssert.Contains(received.Task.Result, "CommandMessage");
     }
 
+    /// <summary>
+    /// Overlapping broadcasts must not abort the connection.
+    /// </summary>
+    /// <remarks>
+    /// WebSocket.SendAsync throws if a second send starts while one is in flight, and the socket
+    /// is torn down. Broadcasts genuinely do overlap here: initial state on connect, the project
+    /// after an edit, and dataref updates from the sim all fire independently.
+    /// </remarks>
+    [TestMethod]
+    public async Task ConcurrentBroadcastsDoNotDropTheClient()
+    {
+        await using var host = new FrontendHost(FreePort(), webRoot: null);
+        host.Start();
+
+        using var socket = new ClientWebSocket();
+        await socket.ConnectAsync(new Uri($"ws://{host.Url.Authority}/ws"), CancellationToken.None);
+
+        Assert.IsTrue(await Eventually(() => host.ClientCount == 1));
+
+        // Fire a burst without awaiting between them, which is what the CLI does.
+        var payload = new string('x', 4000);
+        var sends = Enumerable.Range(0, 40)
+            .Select(i => host.BroadcastAsync("Burst", new { Index = i, Filler = payload }))
+            .ToArray();
+
+        await Task.WhenAll(sends);
+
+        Assert.AreEqual(1, host.ClientCount, "the client was dropped by overlapping sends");
+
+        // And every message actually arrives, in order.
+        for (var expected = 0; expected < 40; expected++)
+        {
+            var message = await ReceiveOneAsync(socket);
+            using var document = JsonDocument.Parse(message);
+
+            Assert.AreEqual(expected, document.RootElement.GetProperty("payload").GetProperty("Index").GetInt32());
+        }
+    }
+
+    /// <summary>
+    /// Reads one whole message, reassembling fragments.
+    /// </summary>
+    private static async Task<string> ReceiveOneAsync(ClientWebSocket socket)
+    {
+        var buffer = new byte[8192];
+        var builder = new StringBuilder();
+
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
+            builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+
+            if (result.EndOfMessage) return builder.ToString();
+        }
+    }
+
+    /// <summary>
+    /// A real project is far bigger than one WebSocket frame, so it must survive fragmentation.
+    /// </summary>
+    [TestMethod]
+    public async Task BroadcastsAFullProjectPayload()
+    {
+        await using var host = new FrontendHost(FreePort(), webRoot: null);
+        var errors = new List<string>();
+        host.Log += (_, message) => errors.Add(message);
+        host.Start();
+
+        using var socket = new ClientWebSocket();
+        await socket.ConnectAsync(new Uri($"ws://{host.Url.Authority}/ws"), CancellationToken.None);
+        Assert.IsTrue(await Eventually(() => host.ClientCount == 1));
+
+        // Roughly the size of a real cockpit project.
+        var project = Core.Project.MfProject.CreateEmpty("Big");
+        for (var i = 0; i < 60; i++)
+        {
+            var item = project.AddConfigItem($"Item {i}", "OutputConfigItem");
+            item["ModuleSerial"] = "Cockpit/ SN-1234-5678";
+            item["Source"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["SourceType"] = "XPLANE",
+                ["XplaneDataRef"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["Path"] = $"sim/cockpit2/some/quite/long/dataref/path/number/{i}",
+                },
+            };
+        }
+
+        await host.BroadcastAsync("Project", project.ToFrontendProject());
+
+        var message = await ReceiveOneAsync(socket);
+        using var document = JsonDocument.Parse(message);
+
+        Assert.AreEqual("Project", document.RootElement.GetProperty("key").GetString());
+        Assert.AreEqual(60, document.RootElement
+            .GetProperty("payload").GetProperty("ConfigFiles")[0].GetProperty("ConfigItems")
+            .GetArrayLength());
+
+        Assert.AreEqual(1, host.ClientCount, $"client dropped. Host log: {string.Join("; ", errors)}");
+    }
+
     [TestMethod]
     public async Task BroadcastWithNoClientsIsHarmless()
     {
