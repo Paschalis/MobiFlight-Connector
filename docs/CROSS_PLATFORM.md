@@ -90,8 +90,8 @@ Inside `MobiFlight.Core`:
 | --- | --- |
 | `Xplane` | `XplaneUdpClient` (subscribe, read, write, commands, heartbeat watchdog, automatic re-subscription), `XplaneProtocol` (packet layouts as pure functions), `XplaneEndpoint`. |
 | `Devices` | `SerialPortScanner`, `CmdMessengerChannel` (the firmware's wire framing), `MobiFlightBoard` (pins, displays, servos, steppers, LCDs, and button/encoder/analog input), `MobiFlightBoardProbe`. |
-| `Project` | `McConfigReader` (.mcc parsing), `ExpressionEvaluator` (the `$`/`@`/`if()` language), `ConfigValueStore` (config values, MobiFlight variables, precondition evaluation), `ConfigRunner` (datarefs drive outputs, inputs drive the sim). |
-| `Web` | `FrontendHost` (HTTP + WebSocket), `WebViewBridge` (the shim that lets the unmodified frontend run in a browser), `FrontendMessages` (the message vocabulary). |
+| `Project` | `McConfigReader` (legacy .mcc parsing), `MfProject` (.mfproj load, edit and save), `ExpressionEvaluator` (the `$`/`@`/`if()` language), `ConfigValueStore` (config values, MobiFlight variables, precondition evaluation), `ConfigRunner` (datarefs drive outputs, inputs drive the sim). |
+| `Web` | `FrontendHost` (HTTP + WebSocket), `WebViewBridge` (the shim that lets the unmodified frontend run in a browser), `FrontendMessages` (the message vocabulary), `FrontendCommandHandler` (applies the UI's edits). |
 
 `src/crossplatform/Directory.Build.props` deliberately does **not** import the repository root one.
 MSBuild stops at the nearest file, so these projects target plain `net10.0` with no runtime
@@ -201,7 +201,7 @@ The React frontend is portable; only its WebView2 host is not. `serve` builds th
 ```bash
 cd src/MobiFlightConnector/frontend && npm install && npm run build && cd -
 
-mobiflight serve sim/cockpit2/radios/actuators/com1_frequency_hz_833 \
+mobiflight serve --project ~/cockpit.mfproj \
   --host 192.168.1.10 --web-root src/MobiFlightConnector/frontend/dist
 ```
 
@@ -218,13 +218,44 @@ Payload members are PascalCase, matching the frontend's TypeScript interfaces; a
 here would deliver messages the UI silently cannot read.
 
 On connect the host pushes `OverlayState`, `ProjectStatus`, `ExecutionState`, `ConnectedControllers`
-and `StatusBarUpdate`, then streams `ConfigValuePartialUpdate` as datarefs change and `LogEntry` as
-things happen. That is enough for the shell to come up and show live state.
+`StatusBarUpdate` and the `Project`, then streams `ConfigValuePartialUpdate` as datarefs change and
+`LogEntry` as things happen.
 
-It is still not a finished UI backend. The frontend defines a larger vocabulary
-(`BoardDefinitions`, `ControllerBindingsUpdate`, `ScanForInputResult` and others) and sends commands
-back that nothing acts on yet, so editing a project through the browser does not work. What the
-shim removes is the structural blocker: the UI itself now runs on macOS and Linux.
+### Editing a project in the browser
+
+The UI is editable. These commands are handled and write back to the project:
+
+| In the UI | Command |
+| --- | --- |
+| Add a config item | `CommandAddConfigItem` |
+| Rename, enable/disable, or edit an item | `CommandUpdateConfigItem` |
+| Delete, duplicate, toggle | `CommandConfigContextMenu` |
+| Multi-select delete or toggle | `CommandConfigBulkAction` |
+| Drag to reorder | `CommandResortConfigItem` |
+| Add, rename or remove a config file tab | `CommandAddConfigFile`, `CommandFileContextMenu` |
+| New / Open / Save / Save As | `CommandMainMenu` |
+| Rename the project, Run, Stop | `CommandProjectToolbar` |
+
+A project is held as a **JSON document, not a typed model**. That is deliberate: a `.mfproj` carries
+far more per-item detail than the portable build understands (modifiers, device sub-types,
+controller bindings, schema version), and mapping it onto typed classes would silently drop
+everything unmodelled the first time a user pressed Save. Keeping the original nodes means an edit
+touches only what it changes. A test loads every `.mfproj` in the repository, saves it again, and
+asserts the result is equivalent.
+
+Two limits worth knowing:
+
+- **A browser cannot open a file dialog on the server.** Pass `--project` on the command line.
+  Save works normally; Save As needs a path in the command payload.
+- **Test mode is not implemented.** Driving outputs without a running sim is not supported, and the
+  UI is told so rather than left waiting.
+
+Still missing from the vocabulary: `BoardDefinitions`, `ControllerBindingsUpdate`,
+`ScanForInputResult`, HubHop and preset browsing. Those feed the device pickers and the wizard, so
+building a config item from scratch in the browser is more manual than it is on Windows.
+
+Legacy `.mcc` projects are read-only here: `mobiflight run` executes them, but editing needs the
+JSON format. Open one once in the Windows Connector and save it as `.mfproj`.
 
 ### Serial port access
 
@@ -238,10 +269,9 @@ shim removes is the structural blocker: the UI itself now runs on macOS and Linu
 
 In rough order of effort, and only worth doing if the project wants to commit to it:
 
-1. **Implement the remaining frontend messages.** The host serves the app, the shim connects it, and
-   the core state messages flow. What is missing is the rest of the vocabulary and, more
-   importantly, acting on the commands the UI sends back so a project can be edited in the browser.
-   This is the shortest path to a usable GUI on macOS.
+1. **Finish the frontend vocabulary.** Editing works, but `BoardDefinitions`,
+   `ControllerBindingsUpdate` and `ScanForInputResult` are still missing, which is what makes the
+   device pickers and the config wizard feel complete. Each is self-contained.
 2. **Converge on one execution engine.** `ConfigRunner` currently reimplements the parts of
    `ExecutionManager` that matter for X-Plane. The better long-term shape is to move
    `ExecutionManager`, the config model and the device caches into a portable project that both the

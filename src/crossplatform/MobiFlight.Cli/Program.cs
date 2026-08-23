@@ -359,7 +359,6 @@ public static class Program
 
         await using var host = new FrontendHost(port, webRoot);
         host.Log += (_, message) => Console.WriteLine($"# {message}");
-        host.MessageReceived += (_, message) => Console.WriteLine($"< {message}");
 
         try
         {
@@ -378,6 +377,34 @@ public static class Program
         Console.WriteLine();
 
         var state = new FrontendStateBroadcaster(host);
+        var commands = new FrontendCommandHandler(host, state);
+        commands.Log += (_, message) => Console.WriteLine($"# {message}");
+
+        // A browser cannot open a native file dialog on the server, so the project comes from the
+        // command line. Without one the UI still starts, on an empty project.
+        var projectPath = options.Value("project") ?? options.Positional.Skip(1).FirstOrDefault(p => p.EndsWith(".mfproj", StringComparison.OrdinalIgnoreCase));
+
+        if (projectPath is not null)
+        {
+            if (!File.Exists(projectPath)) return Fail($"No such file: {projectPath}");
+
+            try
+            {
+                commands.Project = MfProject.Load(projectPath);
+                Console.WriteLine($"Project:   {commands.Project.Name} ({projectPath})");
+            }
+            catch (Exception ex) when (ex is NotSupportedException or InvalidDataException)
+            {
+                return Fail(ex.Message);
+            }
+        }
+        else
+        {
+            commands.Project = MfProject.CreateEmpty();
+            Console.WriteLine("Project:   new empty project (pass --project to open one)");
+        }
+
+        host.MessageReceived += (_, message) => _ = commands.HandleAsync(message);
 
         // Boards are optional here: the point of 'serve' is the UI, which should come up even with
         // nothing plugged in.
@@ -394,10 +421,15 @@ public static class Program
         await using var xplane = new XplaneUdpClient(endpoint);
 
         // A browser cannot ask for state, so push it as soon as one arrives.
-        host.ClientConnected += (_, _) => _ = state.SendInitialStateAsync(
-            xplane.IsConnected ? $"Connected to X-Plane at {endpoint}" : $"Waiting for X-Plane at {endpoint}",
-            controllers,
-            running: xplane.IsConnected);
+        host.ClientConnected += (_, _) => _ = Task.Run(async () =>
+        {
+            await state.SendInitialStateAsync(
+                xplane.IsConnected ? $"Connected to X-Plane at {endpoint}" : $"Waiting for X-Plane at {endpoint}",
+                controllers,
+                running: xplane.IsConnected);
+
+            await commands.PublishProjectAsync();
+        });
 
         xplane.Connected += (_, _) =>
         {
@@ -598,7 +630,8 @@ public static class Program
 
               run <project.mcc>             Run a MobiFlight project against X-Plane and the boards.
               inspect <project.mcc>         Show what a project contains and what can run here.
-              serve [<dataref>...]          Serve the frontend over HTTP and stream sim state to it.
+              serve [<dataref>...]          Serve the frontend over HTTP so a project can be edited
+                                            in a browser, and stream sim state to it.
 
               xplane probe                  Verify that X-Plane answers over UDP.
               xplane read <dataref>         Print one value and exit.
@@ -619,6 +652,7 @@ public static class Program
               --all             For 'serial list': include unlikely ports
               --web-port <n>    Port for 'serve'. Default 8080
               --web-root <dir>  Directory holding the built frontend
+              --project <file>  .mfproj project to open in 'serve'
               -h, --help        Show this help
 
             EXAMPLES
