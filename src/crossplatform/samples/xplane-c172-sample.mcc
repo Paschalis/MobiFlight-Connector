@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  A small X-Plane project meant as a starting point for macOS and Linux.
+
+  Replace the serial "MyCockpit/ SN-000-000" with the serial your board reports from
+  "mobiflight serial probe", and adjust pin and display numbers to your wiring.
+
+  Check what this file will actually do with:
+      mobiflight inspect xplane-c172-sample.mcc
+-->
+<MobiflightConnector>
+  <outputs>
+    <config guid="11111111-1111-1111-1111-111111111101">
+      <active>true</active>
+      <description>Gear unsafe warning lamp</description>
+      <settings>
+        <source type="XplaneDataRef" path="sim/cockpit2/annunciators/gear_unsafe" />
+        <comparison active="True" value="0" operand="&gt;" ifValue="1" elseValue="0" />
+        <display type="Pin" serial="MyCockpit/ SN-000-000" pin="13" />
+        <transformation active="False" expression="$" />
+      </settings>
+    </config>
+
+    <config guid="11111111-1111-1111-1111-111111111102">
+      <active>true</active>
+      <description>Parking brake lamp</description>
+      <settings>
+        <source type="XplaneDataRef" path="sim/cockpit2/controls/parking_brake_ratio" />
+        <comparison active="True" value="0.5" operand="&gt;" ifValue="1" elseValue="0" />
+        <display type="Pin" serial="MyCockpit/ SN-000-000" pin="12" />
+        <transformation active="False" expression="$" />
+      </settings>
+    </config>
+
+    <config guid="11111111-1111-1111-1111-111111111103">
+      <active>true</active>
+      <description>COM1 active frequency</description>
+      <settings>
+        <source type="XplaneDataRef" path="sim/cockpit2/radios/actuators/com1_frequency_hz_833" />
+        <!-- The dataref is in kHz; divide to get the MHz reading shown on the panel. -->
+        <transformation active="True" expression="$/1000" />
+        <display type="Display Module" serial="MyCockpit/ SN-000-000" ledAddress="0"
+                 ledConnector="0" ledModuleSize="8" ledDigits="0,1,2,3,4,5"
+                 ledDecimalPoints="3" ledPadding="True" ledPaddingChar="0" />
+      </settings>
+    </config>
+
+    <config guid="11111111-1111-1111-1111-111111111104">
+      <active>true</active>
+      <description>Flap position gauge</description>
+      <settings>
+        <source type="XplaneDataRef" path="sim/cockpit2/controls/flap_handle_deploy_ratio" />
+        <!-- Ratio 0..1 mapped onto a 0..180 degree servo. -->
+        <transformation active="True" expression="$*180" />
+        <display type="Servo" serial="MyCockpit/ SN-000-000" servoAddress="0"
+                 servoMin="0" servoMax="180" servoMaxRotationPercent="100" />
+      </settings>
+    </config>
+  </outputs>
+
+  <inputs>
+    <config guid="22222222-2222-2222-2222-222222222201">
+      <active>true</active>
+      <description>Avionics master switch</description>
+      <settings serial="MyCockpit/ SN-000-000" name="AvionicsSwitch" type="Button">
+        <button>
+          <onPress type="XplaneInputAction" inputType="Command"
+                   path="sim/systems/avionics_on" expression="$" />
+          <onRelease type="XplaneInputAction" inputType="Command"
+                     path="sim/systems/avionics_off" expression="$" />
+        </button>
+        <preconditions />
+      </settings>
+    </config>
+
+    <config guid="22222222-2222-2222-2222-222222222202">
+      <active>true</active>
+      <description>Parking brake toggle</description>
+      <settings serial="MyCockpit/ SN-000-000" name="ParkingBrake" type="Button">
+        <button>
+          <onPress type="XplaneInputAction" inputType="DataRef"
+                   path="sim/cockpit2/controls/parking_brake_ratio" expression="if($&gt;0.5,0,1)" />
+          <onRelease />
+        </button>
+        <preconditions />
+      </settings>
+    </config>
+
+    <config guid="22222222-2222-2222-2222-222222222203">
+      <active>true</active>
+      <description>COM1 tuning knob</description>
+      <settings serial="MyCockpit/ SN-000-000" name="Com1Encoder" type="Encoder">
+        <encoder>
+          <onLeft type="XplaneInputAction" inputType="Command"
+                  path="sim/radios/stby_com1_coarse_down" expression="$" />
+          <onLeftFast type="XplaneInputAction" inputType="Command"
+                      path="sim/radios/stby_com1_fine_down" expression="$" />
+          <onRight type="XplaneInputAction" inputType="Command"
+                   path="sim/radios/stby_com1_coarse_up" expression="$" />
+          <onRightFast type="XplaneInputAction" inputType="Command"
+                       path="sim/radios/stby_com1_fine_up" expression="$" />
+        </encoder>
+        <preconditions />
+      </settings>
+    </config>
+  </inputs>
+</MobiflightConnector>

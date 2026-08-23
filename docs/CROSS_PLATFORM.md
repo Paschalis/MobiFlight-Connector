@@ -80,9 +80,18 @@ renamed to the canonical casing.
 
 | Project | Contents |
 | --- | --- |
-| `MobiFlight.Core` | `XplaneUdpClient` (portable X-Plane UDP), `XplaneProtocol` (packet layouts), `SerialPortScanner`, `MobiFlightBoardProbe`. |
+| `MobiFlight.Core` | X-Plane UDP client and protocol, serial port discovery, board control, project file parsing, the execution engine, and the frontend host. |
 | `MobiFlight.Cli` | The `mobiflight` command line tool. |
 | `MobiFlight.Core.Tests` | Test suite, including a fake X-Plane that exercises the client end to end. |
+
+Inside `MobiFlight.Core`:
+
+| Namespace | Contents |
+| --- | --- |
+| `Xplane` | `XplaneUdpClient` (subscribe, read, write, commands, heartbeat watchdog, automatic re-subscription), `XplaneProtocol` (packet layouts as pure functions), `XplaneEndpoint`. |
+| `Devices` | `SerialPortScanner`, `CmdMessengerChannel` (the firmware's wire framing), `MobiFlightBoard` (pins, displays, servos, steppers, LCDs, and button/encoder/analog input), `MobiFlightBoardProbe`. |
+| `Project` | `McConfigReader` (.mcc parsing), `ExpressionEvaluator` (the `$`/`@`/`if()` language), `ConfigRunner` (datarefs drive outputs, inputs drive the sim). |
+| `Web` | `FrontendHost`, an HTTP + WebSocket server that serves the React frontend and speaks the same `{key, payload}` envelope the Connector uses. |
 
 `src/crossplatform/Directory.Build.props` deliberately does **not** import the repository root one.
 MSBuild stops at the nearest file, so these projects target plain `net10.0` with no runtime
@@ -155,6 +164,47 @@ mobiflight serial probe
 
 Use `--host 127.0.0.1` (the default) when the sim runs on the same machine as the tools.
 
+## Running a project
+
+`src/crossplatform/samples/xplane-c172-sample.mcc` is a small X-Plane project to start from.
+Replace its board serial with the one `mobiflight serial probe` reports.
+
+```bash
+# What does this project contain, and what of it can run here?
+mobiflight inspect samples/xplane-c172-sample.mcc
+
+# Drive the boards from X-Plane and X-Plane from the boards
+mobiflight run samples/xplane-c172-sample.mcc --host 192.168.1.10
+```
+
+`inspect` is worth running first on any project written for MSFS: configs whose source is FSUIPC or
+SimConnect are listed as unrunnable rather than silently ignored, because those sims do not exist on
+macOS or Linux.
+
+Supported today: dataref sources, `Pin`, `Display Module`, `Servo`, `Stepper` and `LcdDisplay`
+outputs, the transformation and comparison steps, and button, encoder and analog inputs bound to
+X-Plane datarefs or commands. Not yet supported: preconditions, config references, MobiFlight
+variables, and the newer custom device types.
+
+## Serving the frontend
+
+The React frontend is portable; only its WebView2 host is not. `serve` builds the missing half:
+
+```bash
+cd src/MobiFlightConnector/frontend && npm install && npm run build && cd -
+
+mobiflight serve sim/cockpit2/radios/actuators/com1_frequency_hz_833 \
+  --host 192.168.1.10 --web-root src/MobiFlightConnector/frontend/dist
+```
+
+Then open `http://localhost:8080`. Static files are served with SPA fallback, and a WebSocket at
+`/ws` carries `{ "key": "<MessageType>", "payload": { ... } }` messages, the same envelope the
+Connector sends through WebView2's postMessage.
+
+This is a working host and message bridge, not a finished UI backend: the frontend expects many
+message types (`ProjectStatus`, `ConnectedControllers`, `ControllerDefinitions` and others) that the
+portable build does not produce yet. Sim connection state and dataref updates flow today.
+
 ### Serial port access
 
 - **Linux**: the user must be in the `dialout` group.
@@ -167,14 +217,16 @@ Use `--host 127.0.0.1` (the default) when the sim runs on the same machine as th
 
 In rough order of effort, and only worth doing if the project wants to commit to it:
 
-1. **Finish the frontend migration.** The React app in `src/MobiFlightConnector/frontend` is already
-   portable, and `IMessagePublisher` already abstracts the transport (there is a WebSocket
-   implementation next to the WebView2 one). Serving the frontend over HTTP and driving it over a
-   WebSocket removes the WinForms dependency for the UI.
-2. **Extract the execution engine.** `ExecutionManager`, the config model and the device caches are
-   mostly plain C#, but they currently live in a `net10.0-windows` assembly. Moving them into a
-   portable project is a large but mechanical refactor.
-3. **Replace the Windows-only device layers.** `HidSharp` already covers HID cross-platform;
+1. **Implement the remaining frontend messages.** `FrontendHost` already serves the React app and
+   carries the right envelope. What is missing is the rest of the message vocabulary the UI expects,
+   plus handling the commands it sends back. This is the shortest path to a usable GUI on macOS.
+2. **Fill in the remaining config features.** Preconditions, config references and MobiFlight
+   variables are parsed over but not executed. Each is self-contained.
+3. **Converge on one execution engine.** `ConfigRunner` currently reimplements the parts of
+   `ExecutionManager` that matter for X-Plane. The better long-term shape is to move
+   `ExecutionManager`, the config model and the device caches into a portable project that both the
+   WinForms app and the portable build consume. Mostly mechanical, but large.
+4. **Replace the Windows-only device layers.** `HidSharp` already covers HID cross-platform;
    joysticks would need an SDL or evdev/IOKit backend instead of DirectInput.
-4. **Accept that MSFS support stays Windows-only.** SimConnect and FSUIPC have no macOS or Linux
+5. **Accept that MSFS support stays Windows-only.** SimConnect and FSUIPC have no macOS or Linux
    equivalent. A cross-platform build is inherently an X-Plane (and ProSim) build.

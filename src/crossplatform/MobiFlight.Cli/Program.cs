@@ -1,5 +1,8 @@
+using System.Net;
 using System.Runtime.InteropServices;
 using MobiFlight.Core.Devices;
+using MobiFlight.Core.Project;
+using MobiFlight.Core.Web;
 using MobiFlight.Core.Xplane;
 
 namespace MobiFlight.Cli;
@@ -21,8 +24,11 @@ public static class Program
             return options.Positional[0].ToLowerInvariant() switch
             {
                 "xplane" => await RunXplaneAsync(options),
-                "serial" => RunSerial(options),
+                "serial" => await RunSerialAsync(options),
                 "doctor" => await RunDoctorAsync(options),
+                "run" => await RunProjectAsync(options),
+                "inspect" => InspectProject(options),
+                "serve" => await ServeAsync(options),
                 var unknown => Fail($"Unknown command '{unknown}'. Run 'mobiflight --help'.")
             };
         }
@@ -177,9 +183,209 @@ public static class Program
         return 1;
     }
 
+    // ----------------------------------------------------------------- Projects
+
+    /// <summary>
+    /// Reports what a project file contains and what of it can run here, without touching hardware.
+    /// </summary>
+    private static int InspectProject(CommandLine options)
+    {
+        if (options.Positional.Count < 2) return Fail("Usage: mobiflight inspect <project.mcc>");
+
+        var path = options.Positional[1];
+        if (!File.Exists(path)) return Fail($"No such file: {path}");
+
+        var project = McConfigReader.Load(path);
+
+        Console.WriteLine($"{Path.GetFileName(path)}");
+        Console.WriteLine($"  {project.Outputs.Count} output config(s), {project.Inputs.Count} input config(s)");
+        Console.WriteLine();
+
+        var runnable = project.Outputs.Where(o => o.IsExecutable).ToList();
+        Console.WriteLine($"Outputs that can run here ({runnable.Count}):");
+        foreach (var output in runnable)
+        {
+            Console.WriteLine($"  {output.Description}");
+            Console.WriteLine($"      {output.DataRef} -> {output.DeviceKind} on {output.BoardSerial}");
+        }
+
+        var blocked = project.UnsupportedOutputs.ToList();
+        if (blocked.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Outputs that cannot ({blocked.Count}):");
+            foreach (var output in blocked)
+            {
+                Console.WriteLine($"  {output.Description} - source '{output.RawSourceType}' needs Windows");
+            }
+        }
+
+        var inputs = project.Inputs.Where(i => i.IsExecutable).ToList();
+        Console.WriteLine();
+        Console.WriteLine($"Inputs that can run here ({inputs.Count}):");
+        foreach (var input in inputs)
+        {
+            Console.WriteLine($"  {input.Description} ({input.DeviceKind} '{input.DeviceName}')");
+            foreach (var (name, action) in input.Actions.Where(a => a.Value.Kind != InputActionKind.Unsupported))
+            {
+                Console.WriteLine($"      {name}: {action.Kind} {action.Path} = {action.Expression}");
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Runs a project: X-Plane drives the boards and the boards drive X-Plane.
+    /// </summary>
+    private static async Task<int> RunProjectAsync(CommandLine options)
+    {
+        if (options.Positional.Count < 2) return Fail("Usage: mobiflight run <project.mcc> [--host <host>]");
+
+        var path = options.Positional[1];
+        if (!File.Exists(path)) return Fail($"No such file: {path}");
+
+        var project = McConfigReader.Load(path);
+        var endpoint = options.Endpoint();
+
+        Console.WriteLine($"Project: {Path.GetFileName(path)}");
+
+        Console.WriteLine("Looking for boards...");
+        var boards = await MobiFlightBoardProbe.OpenAllAsync();
+
+        if (boards.Count == 0)
+        {
+            Console.Error.WriteLine("No MobiFlight boards found.");
+            Console.Error.WriteLine(SerialPortScanner.GetTroubleshootingHint());
+            return 1;
+        }
+
+        foreach (var board in boards)
+        {
+            Console.WriteLine($"  {board.Info.Name} ({board.Info.Serial}) on {board.Port}");
+        }
+
+        await using var xplane = new XplaneUdpClient(endpoint);
+        var connected = new TaskCompletionSource();
+        xplane.Connected += (_, _) => connected.TrySetResult();
+        xplane.Disconnected += (_, _) => Console.WriteLine("# lost connection to X-Plane");
+
+        xplane.Start();
+
+        Console.WriteLine($"Waiting for X-Plane at {endpoint}...");
+        if (await Task.WhenAny(connected.Task, Task.Delay(options.Timeout())) != connected.Task)
+        {
+            Console.Error.WriteLine($"  FAIL  No answer from {endpoint}.");
+            Console.Error.WriteLine();
+            PrintXplaneTroubleshooting(endpoint);
+
+            foreach (var board in boards) board.Dispose();
+            return 1;
+        }
+
+        Console.WriteLine("  OK    connected.");
+
+        await using var runner = new ConfigRunner(project, xplane, boards);
+        runner.Log += (_, message) => Console.WriteLine($"# {message}");
+
+        await runner.StartAsync(options.Frequency());
+
+        foreach (var reason in runner.Skipped)
+        {
+            Console.WriteLine($"# skipped: {reason}");
+        }
+
+        Console.WriteLine("# running, press Ctrl+C to stop");
+
+        var stop = new TaskCompletionSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            stop.TrySetResult();
+        };
+
+        await stop.Task;
+
+        Console.WriteLine();
+        Console.WriteLine($"{runner.OutputsWritten} output update(s), {runner.InputsForwarded} input event(s).");
+
+        foreach (var board in boards) board.Dispose();
+        return 0;
+    }
+
+    // -------------------------------------------------------------------- Serve
+
+    /// <summary>
+    /// Serves the MobiFlight frontend over HTTP and streams live state to it over a WebSocket.
+    /// </summary>
+    private static async Task<int> ServeAsync(CommandLine options)
+    {
+        var port = options.Int("web-port", 8080);
+        var webRoot = options.Value("web-root") ?? FrontendHost.FindWebRoot();
+        var endpoint = options.Endpoint();
+
+        await using var host = new FrontendHost(port, webRoot);
+        host.Log += (_, message) => Console.WriteLine($"# {message}");
+        host.MessageReceived += (_, message) => Console.WriteLine($"< {message}");
+
+        try
+        {
+            host.Start();
+        }
+        catch (HttpListenerException ex)
+        {
+            return Fail($"Could not listen on port {port}: {ex.Message}");
+        }
+
+        Console.WriteLine($"Frontend:  {host.Url}");
+        Console.WriteLine(webRoot is null
+            ? "Web root:  not found - build the frontend or pass --web-root"
+            : $"Web root:  {webRoot}");
+        Console.WriteLine($"WebSocket: {host.Url}ws");
+        Console.WriteLine();
+
+        await using var xplane = new XplaneUdpClient(endpoint);
+
+        xplane.Connected += (_, _) =>
+        {
+            Console.WriteLine($"# connected to X-Plane at {endpoint}");
+            _ = host.BroadcastAsync("SimConnectionState", new { connected = true, endpoint = endpoint.ToString() });
+        };
+
+        xplane.Disconnected += (_, _) =>
+        {
+            Console.WriteLine("# lost connection to X-Plane");
+            _ = host.BroadcastAsync("SimConnectionState", new { connected = false, endpoint = endpoint.ToString() });
+        };
+
+        xplane.DataRefChanged += (_, e) =>
+            _ = host.BroadcastAsync("ConfigValuePartialUpdate", new { dataRef = e.DataRef, value = e.Value });
+
+        xplane.Start();
+
+        // Any datarefs named on the command line are streamed to the browser.
+        foreach (var dataRef in options.Positional.Skip(1))
+        {
+            await xplane.SubscribeAsync(dataRef, options.Frequency());
+            Console.WriteLine($"# streaming {dataRef}");
+        }
+
+        Console.WriteLine("# press Ctrl+C to stop");
+
+        var stop = new TaskCompletionSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            stop.TrySetResult();
+        };
+
+        await stop.Task;
+        return 0;
+    }
+
     // ------------------------------------------------------------------ Serial
 
-    private static int RunSerial(CommandLine options)
+    private static async Task<int> RunSerialAsync(CommandLine options)
     {
         var subcommand = options.Positional.Count > 1 ? options.Positional[1].ToLowerInvariant() : "list";
 
@@ -229,7 +435,7 @@ public static class Program
                 foreach (var port in ports)
                 {
                     Console.Write($"Probing {port} at {baud} baud... ");
-                    var info = MobiFlightBoardProbe.Probe(port, baud);
+                    var info = await MobiFlightBoardProbe.ProbeAsync(port, baud);
 
                     if (info is null)
                     {
@@ -331,6 +537,10 @@ public static class Program
             COMMANDS
               doctor                        Check the environment: serial ports and X-Plane reachability.
 
+              run <project.mcc>             Run a MobiFlight project against X-Plane and the boards.
+              inspect <project.mcc>         Show what a project contains and what can run here.
+              serve [<dataref>...]          Serve the frontend over HTTP and stream sim state to it.
+
               xplane probe                  Verify that X-Plane answers over UDP.
               xplane read <dataref>         Print one value and exit.
               xplane watch <dataref>...     Stream values until Ctrl+C.
@@ -348,6 +558,8 @@ public static class Program
               --baud <rate>     Serial baud rate. Default 115200
               --port <name>     For 'serial probe': probe only this port
               --all             For 'serial list': include unlikely ports
+              --web-port <n>    Port for 'serve'. Default 8080
+              --web-root <dir>  Directory holding the built frontend
               -h, --help        Show this help
 
             EXAMPLES
