@@ -19,15 +19,19 @@ namespace MobiFlight.Core.Project;
 public static class ExpressionEvaluator
 {
     /// <summary>
-    /// Evaluates an expression, substituting <paramref name="current"/> for <c>$</c> and
-    /// <paramref name="trigger"/> for <c>@</c>.
+    /// Evaluates an expression, substituting <paramref name="current"/> for <c>$</c>,
+    /// <paramref name="trigger"/> for <c>@</c>, and any config reference placeholders.
     /// </summary>
     /// <returns>The result, or null when the expression could not be evaluated.</returns>
-    public static double? Evaluate(string? expression, double current = 0, double? trigger = null)
+    public static double? Evaluate(
+        string? expression,
+        double current = 0,
+        double? trigger = null,
+        IReadOnlyDictionary<string, double>? placeholders = null)
     {
         if (string.IsNullOrWhiteSpace(expression)) return current;
 
-        var substituted = Substitute(expression, current, trigger);
+        var substituted = Substitute(expression, current, trigger, placeholders);
 
         try
         {
@@ -46,9 +50,26 @@ public static class ExpressionEvaluator
     /// Replaces the placeholders with literal numbers, wrapping negatives in parentheses so
     /// "$-5" with a current value of -3 becomes "(-3)-5" rather than "-3-5".
     /// </summary>
-    internal static string Substitute(string expression, double current, double? trigger)
+    internal static string Substitute(
+        string expression,
+        double current,
+        double? trigger,
+        IReadOnlyDictionary<string, double>? placeholders = null)
     {
         var result = expression;
+
+        // Config reference placeholders go first: they are named, so substituting them after the
+        // numeric placeholders risks matching digits that were just inserted.
+        if (placeholders is not null)
+        {
+            // Longest first, so a placeholder "AB" is not clobbered by "A".
+            foreach (var (name, value) in placeholders.OrderByDescending(p => p.Key.Length))
+            {
+                if (string.IsNullOrEmpty(name)) continue;
+
+                result = ReplaceStandalone(result, name, Literal(value));
+            }
+        }
 
         if (result.Contains('@'))
         {
@@ -61,6 +82,43 @@ public static class ExpressionEvaluator
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Replaces a placeholder only where it is not part of a longer word.
+    /// </summary>
+    /// <remarks>
+    /// A blind Replace would corrupt function names, turning "if(" into something unparseable when
+    /// a placeholder happens to be "i" or "f".
+    /// </remarks>
+    internal static string ReplaceStandalone(string input, string name, string replacement)
+    {
+        var builder = new System.Text.StringBuilder(input.Length);
+        var position = 0;
+
+        while (position < input.Length)
+        {
+            var index = input.IndexOf(name, position, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                builder.Append(input, position, input.Length - position);
+                break;
+            }
+
+            var before = index == 0 ? ' ' : input[index - 1];
+            var afterIndex = index + name.Length;
+            var after = afterIndex >= input.Length ? ' ' : input[afterIndex];
+
+            var isStandalone = !char.IsLetterOrDigit(before) && before != '_'
+                            && !char.IsLetterOrDigit(after) && after != '_';
+
+            builder.Append(input, position, index - position);
+            builder.Append(isStandalone ? replacement : name);
+
+            position = afterIndex;
+        }
+
+        return builder.ToString();
     }
 
     private static string Literal(double value)

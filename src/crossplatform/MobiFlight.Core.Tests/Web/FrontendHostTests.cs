@@ -36,12 +36,16 @@ public sealed class FrontendHostTests
 
         var index = await client.GetAsync(host.Url);
         Assert.AreEqual(HttpStatusCode.OK, index.StatusCode);
-        Assert.AreEqual("<h1>MobiFlight</h1>", await index.Content.ReadAsStringAsync());
         Assert.AreEqual("text/html", index.Content.Headers.ContentType?.MediaType);
+
+        var html = await index.Content.ReadAsStringAsync();
+        StringAssert.Contains(html, "<h1>MobiFlight</h1>", "the original markup must survive");
+        StringAssert.Contains(html, "mobiflight-webview-bridge", "HTML gets the WebView2 shim");
 
         var script = await client.GetAsync(new Uri(host.Url, "assets/app.js"));
         Assert.AreEqual(HttpStatusCode.OK, script.StatusCode);
-        Assert.AreEqual("console.log('hi');", await script.Content.ReadAsStringAsync());
+        Assert.AreEqual("console.log('hi');", await script.Content.ReadAsStringAsync(),
+            "non-HTML assets must be served byte for byte");
     }
 
     [TestMethod]
@@ -59,7 +63,7 @@ public sealed class FrontendHostTests
         var response = await client.GetAsync(new Uri(host.Url, "settings/devices"));
 
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
-        Assert.AreEqual("<h1>app</h1>", await response.Content.ReadAsStringAsync());
+        StringAssert.Contains(await response.Content.ReadAsStringAsync(), "<h1>app</h1>");
     }
 
     [TestMethod]

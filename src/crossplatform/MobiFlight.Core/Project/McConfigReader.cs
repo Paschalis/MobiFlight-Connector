@@ -54,8 +54,19 @@ public static class McConfigReader
             Active = ReadBool(config.Element("active")?.Value, false),
 
             RawSourceType = sourceType,
-            SourceKind = sourceType == "XplaneDataRef" ? ConfigSourceKind.XplaneDataRef : ConfigSourceKind.Unsupported,
+            SourceKind = sourceType switch
+            {
+                "XplaneDataRef" => ConfigSourceKind.XplaneDataRef,
+                "Variable" => ConfigSourceKind.Variable,
+                _ => ConfigSourceKind.Unsupported,
+            },
             DataRef = source?.Attribute("path")?.Value,
+
+            VariableName = source?.Attribute("varName")?.Value,
+            VariableType = source?.Attribute("varType")?.Value,
+
+            Preconditions = ReadPreconditions(settings),
+            ConfigReferences = ReadConfigReferences(settings),
 
             BoardSerial = display?.Attribute("serial")?.Value,
             DeviceKind = ReadDeviceKind(displayType),
@@ -114,7 +125,46 @@ public static class McConfigReader
             DeviceKind = ReadInputKind(settings?.Attribute("type")?.Value, deviceElement?.Name.LocalName),
 
             Actions = actions,
+            Preconditions = ReadPreconditions(settings),
+            ConfigReferences = ReadConfigReferences(settings),
         };
+    }
+
+    private static IReadOnlyList<Precondition> ReadPreconditions(XElement? settings)
+    {
+        var container = settings?.Element("preconditions");
+        if (container is null) return [];
+
+        return container.Elements("precondition")
+            .Select(p => new Precondition(
+                Kind: p.Attribute("type")?.Value switch
+                {
+                    "config" => PreconditionKind.Config,
+                    "variable" => PreconditionKind.Variable,
+                    "pin" => PreconditionKind.Pin,
+                    _ => PreconditionKind.None,
+                },
+                // The Connector treats a missing "active" as true for anything but "none".
+                Active: ReadBool(p.Attribute("active")?.Value, p.Attribute("type")?.Value is not (null or "none")),
+                Ref: p.Attribute("ref")?.Value,
+                Operand: p.Attribute("operand")?.Value ?? "=",
+                Value: p.Attribute("value")?.Value,
+                Logic: p.Attribute("logic")?.Value ?? "and"))
+            .ToList();
+    }
+
+    private static IReadOnlyList<ConfigReference> ReadConfigReferences(XElement? settings)
+    {
+        var container = settings?.Element("configrefs");
+        if (container is null) return [];
+
+        return container.Elements("configref")
+            .Where(r => !string.IsNullOrWhiteSpace(r.Attribute("placeholder")?.Value))
+            .Select(r => new ConfigReference(
+                Active: ReadBool(r.Attribute("active")?.Value, false),
+                Ref: r.Attribute("ref")?.Value ?? string.Empty,
+                Placeholder: r.Attribute("placeholder")!.Value))
+            .ToList();
     }
 
     private static InputAction? ReadAction(XElement action)
@@ -123,6 +173,15 @@ public static class McConfigReader
 
         // Empty elements such as <onLeftFast /> mean "nothing bound".
         if (string.IsNullOrEmpty(type)) return null;
+
+        if (type == "VariableInputAction")
+        {
+            return new InputAction(
+                Kind: InputActionKind.SetVariable,
+                Path: action.Attribute("varName")?.Value,
+                Expression: action.Attribute("varExpression")?.Value,
+                RawType: type);
+        }
 
         if (type != "XplaneInputAction")
         {

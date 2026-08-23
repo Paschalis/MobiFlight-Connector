@@ -19,6 +19,9 @@ public sealed class ConfigRunner : IAsyncDisposable
     /// <summary>Input configs grouped by board serial and device name.</summary>
     private readonly Dictionary<string, List<InputConfig>> _inputsByDevice = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Output configs whose source is a MobiFlight variable rather than the sim.</summary>
+    private readonly List<OutputConfig> _variableDrivenOutputs = [];
+
     private bool _started;
 
     public ConfigRunner(McConfigProject project, XplaneUdpClient xplane, IReadOnlyList<MobiFlightBoard> boards)
@@ -39,6 +42,12 @@ public sealed class ConfigRunner : IAsyncDisposable
 
     /// <summary>Output configs that were skipped, with the reason.</summary>
     public List<string> Skipped { get; } = [];
+
+    /// <summary>Number of times a config was held back because its preconditions did not hold.</summary>
+    public int PreconditionBlocks { get; private set; }
+
+    /// <summary>Runtime state: config values and MobiFlight variables.</summary>
+    public ConfigValueStore Values { get; } = new();
 
     /// <summary>
     /// Wires everything up and subscribes to the datarefs the project needs.
@@ -65,6 +74,11 @@ public sealed class ConfigRunner : IAsyncDisposable
 
         Log?.Invoke(this, $"Subscribed to {_outputsByDataRef.Count} dataref(s) at {frequency} Hz.");
         Log?.Invoke(this, $"Listening to {_inputsByDevice.Count} input device binding(s).");
+
+        if (_variableDrivenOutputs.Count > 0)
+        {
+            Log?.Invoke(this, $"{_variableDrivenOutputs.Count} output(s) driven by MobiFlight variables.");
+        }
     }
 
     private void BuildOutputIndex()
@@ -72,6 +86,20 @@ public sealed class ConfigRunner : IAsyncDisposable
         foreach (var output in _project.Outputs)
         {
             if (!output.Active) continue;
+
+            // A variable driven output does not listen to the sim; it is re-evaluated whenever the
+            // variable it reads is written.
+            if (output.SourceKind == ConfigSourceKind.Variable)
+            {
+                if (string.IsNullOrWhiteSpace(output.VariableName))
+                {
+                    Skipped.Add($"{output.Description}: no variable name configured.");
+                    continue;
+                }
+
+                _variableDrivenOutputs.Add(output);
+                continue;
+            }
 
             if (output.SourceKind != ConfigSourceKind.XplaneDataRef)
             {
@@ -94,6 +122,12 @@ public sealed class ConfigRunner : IAsyncDisposable
             if (ResolveBoard(output.BoardSerial) is null)
             {
                 Skipped.Add($"{output.Description}: board '{output.BoardSerial}' is not connected.");
+                continue;
+            }
+
+            if (output.Preconditions.Any(p => p.Active && p.Kind == PreconditionKind.Pin))
+            {
+                Skipped.Add($"{output.Description}: depends on an Arcaze pin, which is Windows only.");
                 continue;
             }
 
@@ -145,13 +179,28 @@ public sealed class ConfigRunner : IAsyncDisposable
         }
     }
 
-    private void Apply(OutputConfig config, float rawValue)
+    private void Apply(OutputConfig config, double rawValue)
     {
+        var placeholders = Values.ResolvePlaceholders(config.ConfigReferences);
+
+        var value = Evaluate(config, rawValue, placeholders);
+        if (value is null) return;
+
+        // Remembered even when the preconditions block the write, because other configs may
+        // reference this value or test it in their own preconditions.
+        Values.SetConfigValue(config.Guid, value.Value);
+
+        if (!Values.ArePreconditionsMet(config.Preconditions))
+        {
+            PreconditionBlocks++;
+            return;
+        }
+
+        // A variable source with no device exists purely to compute a value for others to use.
+        if (config.DeviceKind == OutputDeviceKind.Unknown) return;
+
         var board = ResolveBoard(config.BoardSerial);
         if (board is null) return;
-
-        var value = Evaluate(config, rawValue);
-        if (value is null) return;
 
         switch (config.DeviceKind)
         {
@@ -198,13 +247,17 @@ public sealed class ConfigRunner : IAsyncDisposable
     /// <summary>
     /// Applies the transformation and then the comparison, matching the Connector's order.
     /// </summary>
-    internal static double? Evaluate(OutputConfig config, double rawValue)
+    internal static double? Evaluate(
+        OutputConfig config,
+        double rawValue,
+        IReadOnlyDictionary<string, double>? placeholders = null)
     {
         var value = rawValue;
 
         if (config.Transformation.Active && !string.IsNullOrWhiteSpace(config.Transformation.Expression))
         {
-            var transformed = ExpressionEvaluator.Evaluate(config.Transformation.Expression, value);
+            var transformed = ExpressionEvaluator.Evaluate(
+                config.Transformation.Expression, value, null, placeholders);
             if (transformed is null) return null;
 
             value = transformed.Value;
@@ -218,7 +271,7 @@ public sealed class ConfigRunner : IAsyncDisposable
         // An empty branch means "leave the value alone".
         if (string.IsNullOrWhiteSpace(branch)) return value;
 
-        return ExpressionEvaluator.Evaluate(branch, value);
+        return ExpressionEvaluator.Evaluate(branch, value, null, placeholders);
     }
 
     private static bool CompareTo(double value, ComparisonRule rule)
@@ -258,7 +311,13 @@ public sealed class ConfigRunner : IAsyncDisposable
             if (action.Kind == InputActionKind.Unsupported) continue;
             if (string.IsNullOrWhiteSpace(action.Path)) continue;
 
-            _ = ForwardAsync(action, e.Value);
+            if (!Values.ArePreconditionsMet(config.Preconditions))
+            {
+                PreconditionBlocks++;
+                continue;
+            }
+
+            _ = ForwardAsync(action, e.Value, Values.ResolvePlaceholders(config.ConfigReferences));
         }
     }
 
@@ -300,7 +359,10 @@ public sealed class ConfigRunner : IAsyncDisposable
         }
     }
 
-    private async Task ForwardAsync(InputAction action, int triggerValue)
+    private async Task ForwardAsync(
+        InputAction action,
+        int triggerValue,
+        IReadOnlyDictionary<string, double> placeholders)
     {
         try
         {
@@ -311,9 +373,30 @@ public sealed class ConfigRunner : IAsyncDisposable
                 return;
             }
 
+            if (action.Kind == InputActionKind.SetVariable)
+            {
+                // A variable expression sees the variable's own current value as $.
+                var previous = Values.GetVariableNumber(action.Path!) ?? 0;
+                var updated = ExpressionEvaluator.Evaluate(action.Expression, previous, triggerValue, placeholders);
+
+                if (updated is null)
+                {
+                    Log?.Invoke(this, $"Could not evaluate '{action.Expression}' for variable {action.Path}.");
+                    return;
+                }
+
+                Values.SetVariable(action.Path!, updated.Value);
+                InputsForwarded++;
+
+                // Outputs reading this variable have to be recomputed now, since nothing in the sim
+                // will tell them the value moved.
+                RefreshVariableDrivenOutputs(action.Path!);
+                return;
+            }
+
             // A dataref write may reference the dataref's own current value through $.
             var current = _xplane.ReadDataRef(action.Path!) ?? 0;
-            var result = ExpressionEvaluator.Evaluate(action.Expression, current, triggerValue);
+            var result = ExpressionEvaluator.Evaluate(action.Expression, current, triggerValue, placeholders);
 
             if (result is null)
             {
@@ -327,6 +410,29 @@ public sealed class ConfigRunner : IAsyncDisposable
         catch (Exception ex) when (ex is InvalidOperationException or IOException)
         {
             Log?.Invoke(this, $"Could not forward input to X-Plane: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Re-applies every output that reads the given variable.
+    /// </summary>
+    private void RefreshVariableDrivenOutputs(string variableName)
+    {
+        foreach (var config in _variableDrivenOutputs)
+        {
+            if (!string.Equals(config.VariableName, variableName, StringComparison.OrdinalIgnoreCase)) continue;
+
+            var value = Values.GetVariableNumber(variableName);
+            if (value is null) continue;
+
+            try
+            {
+                Apply(config, value.Value);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException)
+            {
+                Log?.Invoke(this, $"Could not update '{config.Description}': {ex.Message}");
+            }
         }
     }
 

@@ -35,9 +35,18 @@ public sealed record MessageEnvelope(
 /// </remarks>
 public sealed class FrontendHost : IAsyncDisposable
 {
+    /// <summary>
+    /// Property names are serialized exactly as declared.
+    /// </summary>
+    /// <remarks>
+    /// The frontend's TypeScript interfaces use PascalCase members ("Text", "IsRunning"), matching
+    /// what Newtonsoft produces for the Connector's message classes. Applying a camelCase policy
+    /// here would silently deliver messages the UI cannot read. Only the envelope's own "key" and
+    /// "payload" are lowercase, and those are spelled out with attributes.
+    /// </remarks>
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNamingPolicy = null,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
@@ -65,6 +74,12 @@ public sealed class FrontendHost : IAsyncDisposable
 
     /// <summary>Raised for every message a browser sends.</summary>
     public event EventHandler<string>? MessageReceived;
+
+    /// <summary>
+    /// Raised once a browser's WebSocket is ready. Use it to send the initial state, since the
+    /// frontend has no way to ask for it.
+    /// </summary>
+    public event EventHandler? ClientConnected;
 
     /// <summary>Raised for diagnostics.</summary>
     public event EventHandler<string>? Log;
@@ -161,6 +176,7 @@ public sealed class FrontendHost : IAsyncDisposable
         _clients[id] = wsContext.WebSocket;
 
         Log?.Invoke(this, $"Browser connected ({_clients.Count} total).");
+        ClientConnected?.Invoke(this, EventArgs.Empty);
 
         var buffer = new byte[8192];
         var socket = wsContext.WebSocket;
@@ -229,7 +245,17 @@ public sealed class FrontendHost : IAsyncDisposable
             }
         }
 
-        var bytes = File.ReadAllBytes(path);
+        byte[] bytes;
+
+        if (path.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+        {
+            // HTML gets the WebView2 shim so the unmodified frontend build works in a browser.
+            bytes = Encoding.UTF8.GetBytes(WebViewBridge.Inject(File.ReadAllText(path)));
+        }
+        else
+        {
+            bytes = File.ReadAllBytes(path);
+        }
 
         context.Response.StatusCode = 200;
         context.Response.ContentType = ContentTypeFor(path);

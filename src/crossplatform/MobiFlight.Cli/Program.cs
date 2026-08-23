@@ -206,7 +206,27 @@ public static class Program
         foreach (var output in runnable)
         {
             Console.WriteLine($"  {output.Description}");
-            Console.WriteLine($"      {output.DataRef} -> {output.DeviceKind} on {output.BoardSerial}");
+
+            var source = output.SourceKind == ConfigSourceKind.Variable
+                ? $"variable '{output.VariableName}'"
+                : output.DataRef;
+
+            Console.WriteLine($"      {source} -> {output.DeviceKind} on {output.BoardSerial}");
+
+            if (output.Transformation.Active)
+            {
+                Console.WriteLine($"      transform: {output.Transformation.Expression}");
+            }
+
+            foreach (var reference in output.ConfigReferences.Where(r => r.Active))
+            {
+                Console.WriteLine($"      ref {reference.Placeholder} = config {reference.Ref}");
+            }
+
+            foreach (var precondition in output.Preconditions.Where(p => p.Active))
+            {
+                Console.WriteLine($"      when {Describe(precondition)}");
+            }
         }
 
         var blocked = project.UnsupportedOutputs.ToList();
@@ -230,10 +250,23 @@ public static class Program
             {
                 Console.WriteLine($"      {name}: {action.Kind} {action.Path} = {action.Expression}");
             }
+
+            foreach (var precondition in input.Preconditions.Where(p => p.Active))
+            {
+                Console.WriteLine($"      when {Describe(precondition)}");
+            }
         }
 
         return 0;
     }
+
+    private static string Describe(Precondition precondition) => precondition.Kind switch
+    {
+        PreconditionKind.Config => $"config {precondition.Ref} {precondition.Operand} {precondition.Value}",
+        PreconditionKind.Variable => $"variable {precondition.Ref} {precondition.Operand} {precondition.Value}",
+        PreconditionKind.Pin => "an Arcaze pin (Windows only, will never pass here)",
+        _ => "no condition",
+    };
 
     /// <summary>
     /// Runs a project: X-Plane drives the boards and the boards drive X-Plane.
@@ -344,22 +377,46 @@ public static class Program
         Console.WriteLine($"WebSocket: {host.Url}ws");
         Console.WriteLine();
 
+        var state = new FrontendStateBroadcaster(host);
+
+        // Boards are optional here: the point of 'serve' is the UI, which should come up even with
+        // nothing plugged in.
+        var boards = await MobiFlightBoardProbe.OpenAllAsync();
+        var controllers = boards
+            .Select(b => new FrontendMessages.Controller(b.Info.Name, b.Info.Serial, b.Info.Type, b.Port))
+            .ToList();
+
+        foreach (var board in boards)
+        {
+            Console.WriteLine($"# board {board.Info.Name} ({board.Info.Serial}) on {board.Port}");
+        }
+
         await using var xplane = new XplaneUdpClient(endpoint);
+
+        // A browser cannot ask for state, so push it as soon as one arrives.
+        host.ClientConnected += (_, _) => _ = state.SendInitialStateAsync(
+            xplane.IsConnected ? $"Connected to X-Plane at {endpoint}" : $"Waiting for X-Plane at {endpoint}",
+            controllers,
+            running: xplane.IsConnected);
 
         xplane.Connected += (_, _) =>
         {
             Console.WriteLine($"# connected to X-Plane at {endpoint}");
-            _ = host.BroadcastAsync("SimConnectionState", new { connected = true, endpoint = endpoint.ToString() });
+            _ = state.SendStatusAsync($"Connected to X-Plane at {endpoint}");
+            _ = state.SendExecutionStateAsync(running: true);
+            _ = state.SendLogAsync($"Connected to X-Plane at {endpoint}");
         };
 
         xplane.Disconnected += (_, _) =>
         {
             Console.WriteLine("# lost connection to X-Plane");
-            _ = host.BroadcastAsync("SimConnectionState", new { connected = false, endpoint = endpoint.ToString() });
+            _ = state.SendStatusAsync($"Waiting for X-Plane at {endpoint}");
+            _ = state.SendExecutionStateAsync(running: false);
+            _ = state.SendLogAsync($"Lost connection to X-Plane at {endpoint}", "Warn");
         };
 
         xplane.DataRefChanged += (_, e) =>
-            _ = host.BroadcastAsync("ConfigValuePartialUpdate", new { dataRef = e.DataRef, value = e.Value });
+            _ = host.BroadcastAsync("ConfigValuePartialUpdate", new { DataRef = e.DataRef, Value = e.Value });
 
         xplane.Start();
 
@@ -380,6 +437,8 @@ public static class Program
         };
 
         await stop.Task;
+
+        foreach (var board in boards) board.Dispose();
         return 0;
     }
 

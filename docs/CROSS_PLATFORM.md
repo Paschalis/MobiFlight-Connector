@@ -90,8 +90,8 @@ Inside `MobiFlight.Core`:
 | --- | --- |
 | `Xplane` | `XplaneUdpClient` (subscribe, read, write, commands, heartbeat watchdog, automatic re-subscription), `XplaneProtocol` (packet layouts as pure functions), `XplaneEndpoint`. |
 | `Devices` | `SerialPortScanner`, `CmdMessengerChannel` (the firmware's wire framing), `MobiFlightBoard` (pins, displays, servos, steppers, LCDs, and button/encoder/analog input), `MobiFlightBoardProbe`. |
-| `Project` | `McConfigReader` (.mcc parsing), `ExpressionEvaluator` (the `$`/`@`/`if()` language), `ConfigRunner` (datarefs drive outputs, inputs drive the sim). |
-| `Web` | `FrontendHost`, an HTTP + WebSocket server that serves the React frontend and speaks the same `{key, payload}` envelope the Connector uses. |
+| `Project` | `McConfigReader` (.mcc parsing), `ExpressionEvaluator` (the `$`/`@`/`if()` language), `ConfigValueStore` (config values, MobiFlight variables, precondition evaluation), `ConfigRunner` (datarefs drive outputs, inputs drive the sim). |
+| `Web` | `FrontendHost` (HTTP + WebSocket), `WebViewBridge` (the shim that lets the unmodified frontend run in a browser), `FrontendMessages` (the message vocabulary). |
 
 `src/crossplatform/Directory.Build.props` deliberately does **not** import the repository root one.
 MSBuild stops at the nearest file, so these projects target plain `net10.0` with no runtime
@@ -181,10 +181,18 @@ mobiflight run samples/xplane-c172-sample.mcc --host 192.168.1.10
 SimConnect are listed as unrunnable rather than silently ignored, because those sims do not exist on
 macOS or Linux.
 
-Supported today: dataref sources, `Pin`, `Display Module`, `Servo`, `Stepper` and `LcdDisplay`
-outputs, the transformation and comparison steps, and button, encoder and analog inputs bound to
-X-Plane datarefs or commands. Not yet supported: preconditions, config references, MobiFlight
-variables, and the newer custom device types.
+Supported today:
+
+- Dataref and MobiFlight variable sources.
+- `Pin`, `Display Module`, `Servo`, `Stepper` and `LcdDisplay` outputs.
+- The transformation and comparison steps.
+- Button, encoder and analog inputs bound to X-Plane datarefs, X-Plane commands, or variables.
+- Preconditions of type `config` and `variable`, including their `and`/`or` chaining.
+- Config references, so one config's value can appear as a placeholder in another's expression.
+
+Not supported: preconditions of type `pin` (those read Arcaze hardware, which is Windows only, so
+`inspect` reports them and `run` skips the config rather than pretending), and the newer custom
+device types.
 
 ## Serving the frontend
 
@@ -197,13 +205,26 @@ mobiflight serve sim/cockpit2/radios/actuators/com1_frequency_hz_833 \
   --host 192.168.1.10 --web-root src/MobiFlightConnector/frontend/dist
 ```
 
-Then open `http://localhost:8080`. Static files are served with SPA fallback, and a WebSocket at
-`/ws` carries `{ "key": "<MessageType>", "payload": { ... } }` messages, the same envelope the
-Connector sends through WebView2's postMessage.
+Then open `http://localhost:8080`.
 
-This is a working host and message bridge, not a finished UI backend: the frontend expects many
-message types (`ProjectStatus`, `ConnectedControllers`, `ControllerDefinitions` and others) that the
-portable build does not produce yet. Sim connection state and dataref updates flow today.
+The frontend needs **no changes** to run this way. It reaches its backend through exactly two
+WebView2 APIs, `window.chrome.webview.postMessage` and
+`window.chrome.webview.addEventListener("message", ...)`, so the host injects a small shim into the
+served `index.html` that provides both over a WebSocket. Inside the real Connector the genuine
+WebView2 object is present and the shim steps aside, which keeps both builds on one codebase.
+
+Messages use the same `{ "key": "<MessageType>", "payload": { ... } }` envelope the Connector sends.
+Payload members are PascalCase, matching the frontend's TypeScript interfaces; a camelCase policy
+here would deliver messages the UI silently cannot read.
+
+On connect the host pushes `OverlayState`, `ProjectStatus`, `ExecutionState`, `ConnectedControllers`
+and `StatusBarUpdate`, then streams `ConfigValuePartialUpdate` as datarefs change and `LogEntry` as
+things happen. That is enough for the shell to come up and show live state.
+
+It is still not a finished UI backend. The frontend defines a larger vocabulary
+(`BoardDefinitions`, `ControllerBindingsUpdate`, `ScanForInputResult` and others) and sends commands
+back that nothing acts on yet, so editing a project through the browser does not work. What the
+shim removes is the structural blocker: the UI itself now runs on macOS and Linux.
 
 ### Serial port access
 
@@ -217,16 +238,15 @@ portable build does not produce yet. Sim connection state and dataref updates fl
 
 In rough order of effort, and only worth doing if the project wants to commit to it:
 
-1. **Implement the remaining frontend messages.** `FrontendHost` already serves the React app and
-   carries the right envelope. What is missing is the rest of the message vocabulary the UI expects,
-   plus handling the commands it sends back. This is the shortest path to a usable GUI on macOS.
-2. **Fill in the remaining config features.** Preconditions, config references and MobiFlight
-   variables are parsed over but not executed. Each is self-contained.
-3. **Converge on one execution engine.** `ConfigRunner` currently reimplements the parts of
+1. **Implement the remaining frontend messages.** The host serves the app, the shim connects it, and
+   the core state messages flow. What is missing is the rest of the vocabulary and, more
+   importantly, acting on the commands the UI sends back so a project can be edited in the browser.
+   This is the shortest path to a usable GUI on macOS.
+2. **Converge on one execution engine.** `ConfigRunner` currently reimplements the parts of
    `ExecutionManager` that matter for X-Plane. The better long-term shape is to move
    `ExecutionManager`, the config model and the device caches into a portable project that both the
    WinForms app and the portable build consume. Mostly mechanical, but large.
-4. **Replace the Windows-only device layers.** `HidSharp` already covers HID cross-platform;
+3. **Replace the Windows-only device layers.** `HidSharp` already covers HID cross-platform;
    joysticks would need an SDL or evdev/IOKit backend instead of DirectInput.
-5. **Accept that MSFS support stays Windows-only.** SimConnect and FSUIPC have no macOS or Linux
+4. **Accept that MSFS support stays Windows-only.** SimConnect and FSUIPC have no macOS or Linux
    equivalent. A cross-platform build is inherently an X-Plane (and ProSim) build.

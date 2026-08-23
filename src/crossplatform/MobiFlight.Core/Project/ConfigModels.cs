@@ -5,12 +5,53 @@ namespace MobiFlight.Core.Project;
 /// </summary>
 public enum ConfigSourceKind
 {
-    /// <summary>An X-Plane dataref. The only source the portable build can serve.</summary>
+    /// <summary>An X-Plane dataref.</summary>
     XplaneDataRef,
+
+    /// <summary>A MobiFlight variable, computed by another config rather than read from the sim.</summary>
+    Variable,
 
     /// <summary>FSUIPC, SimConnect, ProSim or anything else. Recorded but not executable here.</summary>
     Unsupported,
 }
+
+/// <summary>
+/// What a precondition tests.
+/// </summary>
+public enum PreconditionKind
+{
+    /// <summary>The current value of another config.</summary>
+    Config,
+
+    /// <summary>The current value of a MobiFlight variable.</summary>
+    Variable,
+
+    /// <summary>An Arcaze pin. Arcaze is Windows only, so this can never pass here.</summary>
+    Pin,
+
+    /// <summary>No condition.</summary>
+    None,
+}
+
+/// <summary>
+/// A condition that has to hold before a config is applied.
+/// </summary>
+/// <param name="Logic">
+/// How this precondition combines with the <em>next</em> one, "and" or "or". The Connector applies
+/// the operator carried from the preceding entry, which this mirrors.
+/// </param>
+public sealed record Precondition(
+    PreconditionKind Kind,
+    bool Active,
+    string? Ref,
+    string? Operand,
+    string? Value,
+    string Logic);
+
+/// <summary>
+/// Makes another config's value available inside an expression under a short placeholder.
+/// </summary>
+public sealed record ConfigReference(bool Active, string Ref, string Placeholder);
 
 /// <summary>
 /// What an output config drives on the board.
@@ -57,6 +98,18 @@ public sealed record OutputConfig
     /// <summary>Raw source type as written in the file, for diagnostics.</summary>
     public string? RawSourceType { get; init; }
 
+    /// <summary>Variable name when <see cref="SourceKind"/> is Variable.</summary>
+    public string? VariableName { get; init; }
+
+    /// <summary>"number" or "string".</summary>
+    public string? VariableType { get; init; }
+
+    /// <summary>Conditions that must hold before this config is applied.</summary>
+    public IReadOnlyList<Precondition> Preconditions { get; init; } = [];
+
+    /// <summary>Other configs whose values can be referenced from this one's expressions.</summary>
+    public IReadOnlyList<ConfigReference> ConfigReferences { get; init; } = [];
+
     public OutputDeviceKind DeviceKind { get; init; }
 
     /// <summary>Serial of the board this output belongs to.</summary>
@@ -82,11 +135,20 @@ public sealed record OutputConfig
     public TransformationRule Transformation { get; init; } = new(false, "$");
     public ComparisonRule Comparison { get; init; } = new(false, null, null, null, null);
 
-    /// <summary>True when this config can actually run in the portable build.</summary>
-    public bool IsExecutable => Active
-                             && SourceKind == ConfigSourceKind.XplaneDataRef
-                             && !string.IsNullOrWhiteSpace(DataRef)
-                             && DeviceKind != OutputDeviceKind.Unknown;
+    /// <summary>
+    /// True when this config can actually run in the portable build.
+    /// </summary>
+    /// <remarks>
+    /// A variable source needs no output device: its purpose is to compute a value that other
+    /// configs reference or test in a precondition.
+    /// </remarks>
+    public bool IsExecutable => Active && SourceKind switch
+    {
+        ConfigSourceKind.XplaneDataRef => !string.IsNullOrWhiteSpace(DataRef)
+                                       && DeviceKind != OutputDeviceKind.Unknown,
+        ConfigSourceKind.Variable => !string.IsNullOrWhiteSpace(VariableName),
+        _ => false,
+    };
 }
 
 /// <summary>
@@ -99,6 +161,9 @@ public enum InputActionKind
 
     /// <summary>Trigger an X-Plane command.</summary>
     XplaneCommand,
+
+    /// <summary>Set a MobiFlight variable, which other configs can read or test.</summary>
+    SetVariable,
 
     /// <summary>FSUIPC, key presses and everything else the portable build cannot run.</summary>
     Unsupported,
@@ -147,6 +212,12 @@ public sealed record InputConfig
     /// </summary>
     public IReadOnlyDictionary<string, InputAction> Actions { get; init; }
         = new Dictionary<string, InputAction>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Conditions that must hold before any action fires.</summary>
+    public IReadOnlyList<Precondition> Preconditions { get; init; } = [];
+
+    /// <summary>Other configs whose values can be referenced from this one's expressions.</summary>
+    public IReadOnlyList<ConfigReference> ConfigReferences { get; init; } = [];
 
     public bool IsExecutable => Active
                              && Actions.Values.Any(a => a.Kind != InputActionKind.Unsupported);
